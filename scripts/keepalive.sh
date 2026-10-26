@@ -1,11 +1,20 @@
 #!/bin/bash
 # 网关保活：端口在 listen = 活着；不在就拉起。cron: @reboot + 每分钟。
-# 端口从 .env 读，避免脚本与配置漂移。
+# 端口与 node 路径从 .env 读，避免脚本与配置漂移；NODE_BIN 不填就用 PATH 里的 node
+# （cron 的 PATH 通常只有 /usr/bin:/bin，装在其他位置的 node 要在 .env 里写明）。
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR" || exit 1
-NODE=node
 PORT=$(sed -n 's/^PORT=//p' .env 2>/dev/null | head -1)
 PORT=${PORT:-19900}
+NODE=$(sed -n 's/^NODE_BIN=//p' .env 2>/dev/null | head -1)
+NODE=${NODE:-node}
+
+# cron 与 reload 可能同一秒触发，抢着拉起两个进程；flock 让它们串行。
+# macOS 没有 flock，但那里不跑 cron，不会有这个竞态。
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$DIR/.keepalive.lock"
+  flock -n 9 || exit 0
+fi
 
 # ss 是 Linux 的，lsof 是 macOS/BSD 的 —— 两种都认，脚本才能跨平台跑。
 port_pids() {

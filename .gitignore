@@ -6,3 +6,4 @@ dist/
 __pycache__/
 *.pyc
 scripts/m0/__pycache__/
+.keepalive.lock

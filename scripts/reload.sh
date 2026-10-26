@@ -24,4 +24,4 @@ if [ -n "$PIDS" ]; then
   echo "[$(date '+%F %T')] 停掉旧进程 $(echo $PIDS | tr '\n' ' ')，重新拉起" >> keepalive.log
 fi
 sleep 1
-exec "$DIR/scripts/keepalive.sh"
+exec bash "$DIR/scripts/keepalive.sh"
