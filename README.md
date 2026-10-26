@@ -61,27 +61,32 @@ npm run probe -- glm-5.3-flash "回答两个字：你好"
 
 ## 部署
 
-部署到任意一台能跑 Node 的机器，路径随意（下文以 `/opt/trae-solo-gateway` 为例），
-Node >=22 + `--env-file=.env`。
+默认只监听回环 —— 网关只接受本机请求，不暴露到局域网或公网。放到任意一台能跑 Node 的机器上，
+Node >=22 + `--env-file=.env`：
 
 ```
-.env                   PORT=19900 / TRAE_AUTH_FILE=./secrets/trae-auth.json / GATEWAY_KEY=***
+.env                   HOST=127.0.0.1 / PORT=19900 / TRAE_AUTH_FILE=./secrets/trae-auth.json / GATEWAY_KEY=***
 scripts/keepalive.sh   端口在 listen = 活着；不在就强杀残留并拉起
 crontab                @reboot + 每分钟 keepalive.sh
 ```
 
-- 服务地址：`http://<ip>:19900/v1`
+- 服务地址：`http://127.0.0.1:19900/v1`
 - `GATEWAY_KEY` 非空时 `/v1/*` 必须带 `Authorization: Bearer <key>`；`/healthz` 放行给守护脚本。
+
+需要从别的机器访问时，把 `HOST` 改成 `0.0.0.0`（或某个具体网卡地址），并**务必**先打开 `GATEWAY_KEY`；
+更推荐的做法是保持回环、在前面套一层反向代理（TLS + 鉴权）。
 
 客户端接入（OpenAI 兼容）：
 
 ```yaml
 providers:
   trae:
-    base_url: http://<ip>:19900/v1
+    base_url: http://127.0.0.1:19900/v1
     api_key: <GATEWAY_KEY>
     model: deepseek-v4.1-flash
 ```
+
+> 反向代理后面接时，`base_url` 换成代理的地址，其余不变。
 
 ## 鉴权与续期
 
