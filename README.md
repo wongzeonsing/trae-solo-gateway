@@ -66,9 +66,19 @@ Node >=22 + `--env-file=.env`：
 
 ```
 .env                   HOST=127.0.0.1 / PORT=19900 / TRAE_AUTH_FILE=./secrets/trae-auth.json / GATEWAY_KEY=***
-scripts/keepalive.sh   端口在 listen = 活着；不在就强杀残留并拉起
+scripts/keepalive.sh   端口在 listen = 活着；不在就拉起
 crontab                @reboot + 每分钟 keepalive.sh
 ```
+平台差异只有守护脚本这一处：
+
+| | 守护 |
+|---|---|
+| Linux | `scripts/keepalive.sh`（`ss` 探端口）+ `crontab`: `@reboot` 与每分钟 |
+| macOS | 同一份脚本（自动改用 `lsof`），`crontab` 或 `launchd` 都行 |
+| Windows | 没有 bash —— 直接 `node --env-file=.env src/main.ts`，常驻交给任务计划程序 / NSSM |
+
+服务本身是纯 Node（fastify + fetch），没有平台相关代码，三个系统跑的是同一份 `src/`。
+
 
 - 服务地址：`http://127.0.0.1:19900/v1`
 - `GATEWAY_KEY` 非空时 `/v1/*` 必须带 `Authorization: Bearer <key>`；`/healthz` 放行给守护脚本。

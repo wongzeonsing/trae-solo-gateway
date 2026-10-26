@@ -7,15 +7,21 @@ cd "$DIR" || exit 1
 PORT=$(sed -n 's/^PORT=//p' .env 2>/dev/null | head -1)
 PORT=${PORT:-19900}
 
-PID=$(ss -tlnp 2>/dev/null | grep ":${PORT} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
-if [ -n "$PID" ]; then
-  kill "$PID" 2>/dev/null || true
-  for _ in 1 2 3 4 5; do
-    kill -0 "$PID" 2>/dev/null || break
-    sleep 1
-  done
-  kill -9 "$PID" 2>/dev/null || true
-  echo "[$(date '+%F %T')] 停掉旧进程 $PID，重新拉起" >> keepalive.log
+# ss 是 Linux 的，lsof 是 macOS/BSD 的 —— 两种都认，脚本才能跨平台跑。
+port_pids() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnp 2>/dev/null | grep ":$PORT " | sed -n 's/.*pid=\([0-9]*\).*/\1/p'
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null
+  fi
+}
+
+PIDS=$(port_pids)
+if [ -n "$PIDS" ]; then
+  echo "$PIDS" | xargs kill 2>/dev/null || true
+  sleep 5
+  echo "$PIDS" | xargs kill -9 2>/dev/null || true
+  echo "[$(date '+%F %T')] 停掉旧进程 $(echo $PIDS | tr '\n' ' ')，重新拉起" >> keepalive.log
 fi
 sleep 1
 exec "$DIR/scripts/keepalive.sh"
