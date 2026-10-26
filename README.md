@@ -92,9 +92,6 @@ providers:
   取 `Token / RefreshToken / TokenExpireAt / RefreshExpireAt`。
   **每次调用都会轮换 RefreshToken**，所以必须原子写回 auth 文件（保留
   `deviceId/machineId/privateKeyPEM` 等原字段）；写回失败只降级为内存内使用。
-- **签到**：`data/scripts/checkin_all.py`（Hermes cron，每天 08:10）直连 `trae.cn`，
-  不经过本网关；它和网关共用同一份 auth 文件。
-
 - **并发安全**：续期用 in-flight 去重，多个请求同时到达时只刷一次。
 
 ## 超时
