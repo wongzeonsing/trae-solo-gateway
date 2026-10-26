@@ -1,5 +1,6 @@
 import { cfg } from "../config.ts";
 import { upstreamHeaders } from "./auth.ts";
+import { addUsage } from "../console/stats.ts";
 
 export type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 
@@ -227,6 +228,11 @@ export async function* streamChat(
           }
         } else if (ev.event === "token_usage") {
           const u = JSON.parse(ev.data) as Record<string, number>;
+          addUsage(model, {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            reasoning_tokens: u.reasoning_tokens,
+          });
           yield {
             usage: {
               prompt_tokens: u.prompt_tokens ?? 0,

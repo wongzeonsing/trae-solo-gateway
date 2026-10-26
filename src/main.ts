@@ -4,15 +4,25 @@ import { registerOpenAI } from "./http/openai.ts";
 import { registerAnthropic } from "./http/anthropic.ts";
 import { getAuth } from "./trae/auth.ts";
 import { startModelSync } from "./trae/models.ts";
+import { registerConsole } from "./http/console.ts";
+import { beginRequest, endRequest } from "./console/stats.ts";
 
 const app = Fastify({ logger: { level: cfg.logLevel }, disableRequestLogging: true });
 
 app.addHook("onRequest", (req, reply, done) => {
   const ua = String(req.headers["user-agent"] ?? "").slice(0, 48);
-  app.log.info({ u: req.url, ua, via: req.headers["x-forwarded-for"] ?? req.ip }, "req");
-  reply.raw.on("close", () => app.log.info({ u: req.url, s: reply.raw.statusCode }, "res"));
+  const via = String(req.headers["x-forwarded-for"] ?? req.ip);
+  app.log.info({ u: req.url, ua, via }, "req");
+  const rec = beginRequest(req.url, ua, via);
+  const t0 = Date.now();
+  reply.raw.on("close", () => {
+    endRequest(rec, reply.raw.statusCode, Date.now() - t0);
+    app.log.info({ u: req.url, s: reply.raw.statusCode }, "res");
+  });
   // trust boundary: 网关可能暴露到公网，未配 key 时不做校验只可能是本机调试
-  if (cfg.apiKey && req.url !== "/healthz") {
+  // /console 自己按 Host 限制内网访问，浏览器打不开带 key 的请求，所以单独放行。
+  const open = req.url === "/healthz" || req.url.startsWith("/console");
+  if (cfg.apiKey && !open) {
     const auth = req.headers.authorization ?? "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : String(req.headers["x-api-key"] ?? "");
     if (token !== cfg.apiKey) {
@@ -25,6 +35,7 @@ app.addHook("onRequest", (req, reply, done) => {
 
 await registerOpenAI(app);
 await registerAnthropic(app);
+await registerConsole(app);
 
 app.get("/healthz", async () => {
   try {
