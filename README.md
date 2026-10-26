@@ -6,12 +6,27 @@
 > 仅供个人学习与协议研究使用。使用它很可能违反 Trae 的服务条款，可能导致账号被限制或封禁；请自行承担全部风险，
 > 不要用于商业用途、对外提供服务或大规模分发。运行需要你自己账号的登录态，本仓库不包含、也不分发任何凭据。
 >
+> 本项目按「现状」提供，不承诺可用性、稳定性或兼容性；上游随时可能变更或失效。
 > 如果你只是想稳定地用模型，请购买官方服务。
 
 把 Trae CN 的模型封装成 OpenAI / Anthropic 兼容 API。独立进程、独立仓库、默认端口 `19980`。
 
 **现状**：`chat_v3`（`llm_utils_chat`）通道已打通并验收，支持原生 function calling；原生 SOLO agent 通道
 （`create_agent_task`）被服务端 summary 配置卡住，详见 `docs/PROTOCOL.md` §4。
+
+## 前置条件
+
+- Node >= 22（直接跑 TypeScript，无需构建）
+- 一个可用的 Trae CN 账号
+- **一次性**导出登录态：在装有 Trae CN 的机器上登录后，取出
+  `token / refreshToken / deviceId / machineId / privateKeyPEM`，写成 auth JSON
+  （`TRAE_AUTH_FILE` 指向它，权限建议 600）
+
+导出之后**不需要**保持 Trae 运行。续期走独立的 OAuth 接口，不依赖 IDE 进程，也不需要设备证明：
+token 寿命 14 天，网关在剩余 <30 分钟时自动换新并原子写回。refreshToken 本身到
+`refreshExpiredAt` 才失效（通常还有几个月），到期后才需要再导一次。
+
+即使 token 已过期，只要 refreshToken 还有效，网关会在第一次请求前自己续上。
 
 ## 跑起来
 
@@ -88,6 +103,16 @@ providers:
 - 非流式响应先发 `Transfer-Encoding: chunked` 头，并每 8s 写入一个换行保活，
   避免长请求被中间设备判为超时（JSON 解析容忍前导空白）。
 - 流式首字节通常 <1s；长回答走流式更稳。
+
+## 相关工作
+
+- [ZedeX/trae-local-api](https://github.com/ZedeX/trae-local-api) —— 最早公开 `ExchangeToken`
+  续期链路（该项目的许可证是「仅供学习研究」，不是 MIT，因此这里只借鉴协议事实）
+- [Ttungx/trae-solo-local-api](https://github.com/Ttungx/trae-solo-local-api) —— SOLO 轻排队通道
+  与「思考档位走提示词前缀注入」的做法
+
+本项目是独立实现，未复用上述项目的代码。所有端点、字段名、错误码均来自对客户端自身流量的
+观察与逐字段验证；已经试过并确认走不通的路子记在 `docs/PROTOCOL.md` §6。
 
 ## 边界
 
