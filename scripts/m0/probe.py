@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe Trae upstream with a real token (read from NAS auth file, never printed).
+"""Probe Trae upstream with a real token (read from an auth file, never printed).
 
 usage: probe.py <path> [bodyfile]   e.g. probe.py /api/agent/v3/create_agent_task body.json
 """

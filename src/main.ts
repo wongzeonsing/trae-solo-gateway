@@ -11,7 +11,7 @@ app.addHook("onRequest", (req, reply, done) => {
   const ua = String(req.headers["user-agent"] ?? "").slice(0, 48);
   app.log.info({ u: req.url, ua, via: req.headers["x-forwarded-for"] ?? req.ip }, "req");
   reply.raw.on("close", () => app.log.info({ u: req.url, s: reply.raw.statusCode }, "res"));
-  // trust boundary: 网关会经 frp 暴露到公网，未配 key 时不做校验只可能是本机调试
+  // trust boundary: 网关可能暴露到公网，未配 key 时不做校验只可能是本机调试
   if (cfg.apiKey && req.url !== "/healthz") {
     const auth = req.headers.authorization ?? "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : String(req.headers["x-api-key"] ?? "");

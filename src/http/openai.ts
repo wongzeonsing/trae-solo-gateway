@@ -82,7 +82,7 @@ export async function registerOpenAI(app: FastifyInstance) {
     if (!messages.length) return reply.code(400).send({ error: { message: "messages is required" } });
 
     if (!b.stream) {
-      // 非流式也要过 frp（对外 39900 有 ~30s 响应超时，超时返回 502 HTML）。
+      // 非流式：避免长请求被中间设备判超时。
       // 先发 chunked 头、每 8s 写一个换行保活；JSON 解析容忍前导空白。
       reply.hijack();
       const raw = reply.raw;

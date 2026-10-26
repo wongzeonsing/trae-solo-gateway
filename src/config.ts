@@ -9,7 +9,7 @@ export const cfg = {
   host: env.HOST ?? "127.0.0.1",
   port: num(env.PORT, 19980),
   upstream: env.TRAE_UPSTREAM ?? "https://api5-normal.mchost.guru",
-  /** Trae 登录态（只读）。默认指向 NAS 上已导出的那份。 */
+  /** Trae 登录态（只读）。默认指向导出的 auth 文件。 */
   authFile: env.TRAE_AUTH_FILE ?? "./secrets/trae-auth.json",
   appId: env.TRAE_APP_ID ?? "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
   ideVersion: env.TRAE_IDE_VERSION ?? "3.4.4",

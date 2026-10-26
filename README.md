@@ -44,26 +44,26 @@ npm run probe
 npm run probe -- glm-5.3-flash "回答两个字：你好"
 ```
 
-## 部署（NAS，已接管 127.0.0.1:19900）
+## 部署
 
-线上在 NAS：`/opt/trae-solo-gateway`，Node >=22 + `--env-file=.env`。
+部署到任意一台能跑 Node 的机器，路径随意（下文以 `/opt/trae-solo-gateway` 为例），
+Node >=22 + `--env-file=.env`。
 
 ```
-.env            PORT=19900 / TRAE_AUTH_FILE=./secrets/trae-auth.json / GATEWAY_KEY=***
+.env                   PORT=19900 / TRAE_AUTH_FILE=./secrets/trae-auth.json / GATEWAY_KEY=***
 scripts/keepalive.sh   端口在 listen = 活着；不在就强杀残留并拉起
-crontab        @reboot + 每分钟 keepalive.sh
+crontab                @reboot + 每分钟 keepalive.sh
 ```
 
-- 对外入口：反向代理的 `https://<your-domain>:39900/v1`（39900 → 127.0.0.1:19900）。
+- 服务地址：`http://<ip>:19900/v1`
 - `GATEWAY_KEY` 非空时 `/v1/*` 必须带 `Authorization: Bearer <key>`；`/healthz` 放行给守护脚本。
-- 回滚：把 crontab 里两行换回 `trae-proxy/keepalive.sh`，`trae-proxy` 目录原样保留、未改动。
 
-Mac 侧 Hermes provider：
+客户端接入（OpenAI 兼容）：
 
 ```yaml
 providers:
-  trae-solo:
-    base_url: https://<your-domain>:39900/v1
+  trae:
+    base_url: http://<ip>:19900/v1
     api_key: <GATEWAY_KEY>
     model: deepseek-v4.1-flash
 ```
@@ -80,15 +80,14 @@ providers:
 - **签到**：`data/scripts/checkin_all.py`（Hermes cron，每天 08:10）直连 `trae.cn`，
   不经过本网关；它和网关共用同一份 auth 文件。
 
-## 网络路径（重要）
+- **并发安全**：续期用 in-flight 去重，多个请求同时到达时只刷一次。
 
-| 路径 | 适用 | 限制 |
-|---|---|---|
-| `http://<nas-ip>:19900/v1` | 内网客户端 | 无（推荐） |
-| `https://<your-domain>:39900/v1` | 外网 | **反向代理有 ~30s 响应超时**，非流式长请求会被掐成 502（网关已用心跳规避） |
+## 超时
 
-长思考（>30s）的**非流式**请求必须走内网直连，或让客户端用 `stream: true`
-（流式首字节 ~0.6s，不受 30s 影响）。网关自己的总超时是 `TRAE_TIMEOUT_MS`（线上 300000）。
+- 网关自身总超时 `TRAE_TIMEOUT_MS`（默认 120s，可调）。
+- 非流式响应先发 `Transfer-Encoding: chunked` 头，并每 8s 写入一个换行保活，
+  避免长请求被中间设备判为超时（JSON 解析容忍前导空白）。
+- 流式首字节通常 <1s；长回答走流式更稳。
 
 ## 边界
 
