@@ -1,0 +1,21 @@
+{
+  "name": "trae-solo-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI/Anthropic-compatible gateway for Trae CN (chat_v3 channel)",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
+    "probe": "node scripts/probe.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

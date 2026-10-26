@@ -1,0 +1,245 @@
+import { cfg } from "../config.ts";
+import { upstreamHeaders } from "./auth.ts";
+
+export type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+
+export type Msg = {
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  /** assistant 回合里模型要求调用的工具 */
+  tool_calls?: ToolCall[];
+  /** role=tool 时对应哪个调用 */
+  tool_call_id?: string;
+};
+
+/** OpenAI tools 定义，原样收下（上游要求 parameters 是 JSON 字符串，发送时再串化）。 */
+export type ToolDef = { type: "function"; function: { name: string; description?: string; parameters?: unknown } };
+
+/** 与 OpenAI 流式 delta.tool_calls 同构：index 定位，arguments 为增量。 */
+export type ToolCallDelta = {
+  index: number;
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+};
+
+export type Delta = {
+  /** 正文增量 */
+  text?: string;
+  /** 思考链增量 */
+  reasoning?: string;
+  toolCalls?: ToolCallDelta[];
+  finishReason?: string;
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; reasoning_tokens?: number };
+};
+
+type OutputPayload = {
+  response?: string | null;
+  reasoning_content?: string | null;
+  tool_calls?: Array<{
+    index?: number;
+    id?: string;
+    type?: string;
+    function_call?: { name?: string; arguments?: string } | null;
+  }> | null;
+};
+
+export type ChatOpts = {
+  /** OpenAI 的五档映射到 Trae 的三档（light/high/extra_high）。 */
+  reasoningEffort?: string;
+  tools?: ToolDef[];
+  toolChoice?: string;
+};
+
+const EFFORT: Record<string, "light" | "high" | "extra_high"> = {
+  minimal: "light",
+  low: "light",
+  medium: "high",
+  high: "high",
+  xhigh: "extra_high",
+  max: "extra_high",
+  ultra: "extra_high",
+};
+
+export function mapEffort(v?: string): "light" | "high" | "extra_high" | undefined {
+  if (!v) return undefined;
+  return EFFORT[v.toLowerCase()] ?? (["light", "high", "extra_high"].includes(v.toLowerCase()) ? (v.toLowerCase() as never) : undefined);
+}
+
+/** 上游 messages：assistant 带 tool_calls、tool 带 tool_call_id，其余走文本块。 */
+function toUpstreamMessages(messages: Msg[]) {
+  return messages.map((m) => {
+    if (m.role === "tool") {
+      return { role: "tool", tool_call_id: m.tool_call_id ?? "", content: [{ type: "text", text: m.content }] };
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      return {
+        role: "assistant",
+        tool_calls: m.tool_calls.map((t) => ({
+          id: t.id,
+          type: t.type,
+          function_call: { name: t.function.name, arguments: t.function.arguments },
+        })),
+      };
+    }
+    return { role: m.role, content: [{ type: "text", text: m.content }] };
+  });
+}
+
+/** 上游要求 parameters 是字符串（Go FunctionDefinition.parameters string）。 */
+function toUpstreamTools(tools?: ToolDef[]) {
+  return tools?.map((t) => ({
+    type: "function",
+    function: {
+      name: t.function.name,
+      description: t.function.description ?? "",
+      parameters: typeof t.function.parameters === "string" ? t.function.parameters : JSON.stringify(t.function.parameters ?? {}),
+    },
+  }));
+}
+
+let specialHits = 0;
+
+/**
+ * 诊断：上游把特殊 token 文本化后（全角竖线 ｜ / 下划线 ▁）会以可见字符进入正文，
+ * OpenAI 兼容客户端不认识，只会原样显示。这里只记录原始片段，不改写输出。
+ */
+function traceSpecial(text: string, model: string) {
+  if (specialHits >= 5 || !/[｜▁]/.test(text)) return;
+  specialHits++;
+  console.warn(`[special-token] model=${model} raw=${JSON.stringify(text.slice(0, 200))}`);
+}
+
+/**
+ * POST /api/agent/v3/llm_utils_chat，把上游 SSE 归一化成增量。
+ * 上游事件：metadata / timing_cost / output / extra_info / token_usage / done / error。
+ * 注意 HTTP 200 + event:error 是失败（聊天通道也会这样）。
+ */
+export async function* streamChat(
+  model: string,
+  messages: Msg[],
+  opts: ChatOpts = {},
+  signal?: AbortSignal,
+): AsyncGenerator<Delta> {
+  const effort = mapEffort(opts.reasoningEffort);
+  const tools = toUpstreamTools(opts.tools);
+  const body = {
+    function: cfg.functionName,
+    config_name: model,
+    model,
+    stream: true,
+    ...(effort ? { reasoning_effort: effort } : {}),
+    ...(tools?.length ? { tools, ...(opts.toolChoice ? { tool_choice: opts.toolChoice } : {}) } : {}),
+    messages: toUpstreamMessages(messages),
+  };
+
+  if (process.env.TRAE_DUMP === "1") {
+    console.log(`[dump] body=${JSON.stringify(body).slice(0, 1200)}`);
+  }
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error("upstream timeout")), cfg.timeoutMs);
+  const onAbort = () => ac.abort(signal?.reason);
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  let res: Response;
+  try {
+    res = await fetch(`${cfg.upstream}/api/agent/v3/llm_utils_chat`, {
+      method: "POST",
+      headers: await upstreamHeaders(),
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    clearTimeout(timer);
+    throw new UpstreamError(res.status, text.slice(0, 800));
+  }
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const ev = parseBlock(block);
+        if (!ev) continue;
+        if (ev.event === "output") {
+          const p = JSON.parse(ev.data) as OutputPayload;
+          const text = p.response ?? undefined;
+          const reasoning = p.reasoning_content ?? undefined;
+          if (text) traceSpecial(text, model);
+          const toolCalls = (p.tool_calls ?? [])?.map((t, i) => ({
+            index: t.index ?? i,
+            ...(t.id ? { id: t.id } : {}),
+            ...(t.type ? { type: t.type } : {}),
+            ...(t.function_call
+              ? {
+                  function: {
+                    ...(t.function_call.name ? { name: t.function_call.name } : {}),
+                    ...(t.function_call.arguments ? { arguments: t.function_call.arguments } : {}),
+                  },
+                }
+              : {}),
+          }));
+          if (text || reasoning || toolCalls?.length) {
+            yield {
+              ...(text ? { text } : {}),
+              ...(reasoning ? { reasoning } : {}),
+              ...(toolCalls?.length ? { toolCalls } : {}),
+            };
+          }
+        } else if (ev.event === "token_usage") {
+          const u = JSON.parse(ev.data) as Record<string, number>;
+          yield {
+            usage: {
+              prompt_tokens: u.prompt_tokens ?? 0,
+              completion_tokens: u.completion_tokens ?? 0,
+              total_tokens: u.total_tokens ?? 0,
+              reasoning_tokens: u.reasoning_tokens,
+            },
+          };
+        } else if (ev.event === "done") {
+          const d = JSON.parse(ev.data) as { finish_reason?: string };
+          yield { finishReason: d.finish_reason ?? "stop" };
+        } else if (ev.event === "error") {
+          const e = JSON.parse(ev.data) as { code?: number; message?: string };
+          throw new UpstreamError(502, `upstream error ${e.code ?? ""}: ${e.message ?? ev.data}`);
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+  }
+}
+
+function parseBlock(block: string): { event: string; data: string } | null {
+  let event = "";
+  const dataLines: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  if (!event || !dataLines.length) return null;
+  return { event, data: dataLines.join("\n") };
+}
+
+export class UpstreamError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = "UpstreamError";
+  }
+}
