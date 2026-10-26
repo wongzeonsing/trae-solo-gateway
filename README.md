@@ -9,7 +9,7 @@
 > 本项目按「现状」提供，不承诺可用性、稳定性或兼容性；上游随时可能变更或失效。
 > 如果你只是想稳定地用模型，请购买官方服务。
 
-把 Trae CN 的模型封装成 OpenAI / Anthropic 兼容 API。独立进程、独立仓库、默认端口 `19980`。
+把 Trae CN 的模型封装成 OpenAI / Anthropic 兼容 API。独立进程、独立仓库、默认端口 `19900`。
 
 **现状**：`chat_v3`（`llm_utils_chat`）通道已打通并验收，支持原生 function calling；原生 SOLO agent 通道
 （`create_agent_task`）被服务端 summary 配置卡住，详见 `docs/PROTOCOL.md` §4。
@@ -50,7 +50,7 @@ TRAE_AUTH_FILE=/path/to/trae-auth.json node src/main.ts
 
 ```bash
 # 流式
-curl -N http://127.0.0.1:19980/v1/chat/completions \
+curl -N http://127.0.0.1:19900/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"deepseek-v4.1-flash","stream":true,"messages":[{"role":"user","content":"只回答两个字：通了"}]}'
 
