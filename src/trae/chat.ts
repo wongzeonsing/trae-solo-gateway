@@ -137,36 +137,62 @@ export async function* streamChat(
     console.log(`[dump] body=${JSON.stringify(body).slice(0, 1200)}`);
   }
 
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(new Error("upstream timeout")), cfg.timeoutMs);
-  const onAbort = () => ac.abort(signal?.reason);
-  signal?.addEventListener("abort", onAbort, { once: true });
+  const url = `${cfg.upstream}/api/agent/v3/llm_utils_chat`;
+  const headers = await upstreamHeaders();
+  const payload = JSON.stringify(body);
 
-  let res: Response;
-  try {
-    res = await fetch(`${cfg.upstream}/api/agent/v3/llm_utils_chat`, {
-      method: "POST",
-      headers: await upstreamHeaders(),
-      body: JSON.stringify(body),
-      signal: ac.signal,
-    });
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
+  // 建流阶段可重试：此时还没往外 yield 任何增量，重来一遍是安全的。
+  // 流一旦开始就不能重试（客户端已收到前半段）；客户端主动取消也不重试。
+  let res: Response | undefined;
+  let ac: AbortController | undefined;
+  let totalTimer: ReturnType<typeof setTimeout> | undefined;
+  let detach: (() => void) | undefined;
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= cfg.retryAttempts; attempt++) {
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort(new Error("client closed"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const total = setTimeout(() => ctrl.abort(new Error("upstream total timeout")), cfg.timeoutMs);
+    const header = setTimeout(() => ctrl.abort(new Error("upstream header timeout")), cfg.headerTimeoutMs);
+    try {
+      const r = await fetch(url, { method: "POST", headers, body: payload, signal: ctrl.signal });
+      clearTimeout(header);
+      if (!r.ok || !r.body) {
+        const text = await r.text().catch(() => "");
+        throw new UpstreamError(r.status, text.slice(0, 800));
+      }
+      res = r;
+      ac = ctrl;
+      totalTimer = total;
+      detach = () => signal?.removeEventListener("abort", onAbort);
+      break;
+    } catch (e) {
+      clearTimeout(header);
+      clearTimeout(total);
+      signal?.removeEventListener("abort", onAbort);
+      // 客户端取消、或 4xx（429 除外）重试也没用
+      if (signal?.aborted) throw e;
+      if (e instanceof UpstreamError && e.status < 500 && e.status !== 429) throw e;
+      lastErr = e;
+      if (attempt < cfg.retryAttempts) {
+        await new Promise((r) => setTimeout(r, cfg.retryBackoffMs * attempt));
+      }
+    }
   }
+  if (!res || !ac) throw lastErr ?? new UpstreamError(504, "upstream unavailable");
 
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => "");
-    clearTimeout(timer);
-    throw new UpstreamError(res.status, text.slice(0, 800));
-  }
-
-  const reader = res.body.getReader();
+  const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = "";
+  // 空闲超时：每收到一块数据就重置，专门抓「流到一半不动了」。
+  let idle = setTimeout(() => ac!.abort(new Error("upstream idle timeout")), cfg.idleTimeoutMs);
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      clearTimeout(idle);
+      idle = setTimeout(() => ac!.abort(new Error("upstream idle timeout")), cfg.idleTimeoutMs);
       buf += dec.decode(value, { stream: true });
       let idx: number;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
@@ -219,7 +245,9 @@ export async function* streamChat(
       }
     }
   } finally {
-    clearTimeout(timer);
+    clearTimeout(idle);
+    clearTimeout(totalTimer);
+    detach?.();
     reader.cancel().catch(() => {});
   }
 }
