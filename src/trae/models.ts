@@ -31,10 +31,19 @@ export async function refreshModels(): Promise<string[]> {
       function_configs?: Array<{ config_info_list?: Array<Record<string, unknown>> }>;
     };
     const list = data.function_configs?.[0]?.config_info_list ?? [];
-    const live = list
-      .filter((c) => !c.is_invisible_to_user)
-      .map((c) => String(c.config_name ?? ""))
-      .filter((n) => n && !n.startsWith("custom_model_") && !INTERNAL.has(n));
+    const live: string[] = [];
+    for (const c of list) {
+      if (c.is_invisible_to_user) continue;
+      const name = String(c.config_name ?? "");
+      if (!name || name.startsWith("custom_model_") || INTERNAL.has(name)) continue;
+      live.push(name);
+      // `model_name=<name>__max` 在 llm_utils_chat 上实测可用：上下文 116k→1M、
+      // 单轮输出上限 16k→64k、prompt 预算 100k→936k。只有服务端标了 max_mode
+      // 且给出 max 上下文的模型才列，别让用户选到必然 4001 的名字。
+      const dc = c.display_config as { max_mode?: boolean } | undefined;
+      const cw = c.context_window_tokens as { max?: number } | undefined;
+      if (dc?.max_mode && cw?.max) live.push(`${name}__max`);
+    }
     if (!live.length) throw new Error("upstream returned no visible model");
 
     // 静态清单里的模型即使被上游隐藏也保留（它们已验证可跑），合并去重。

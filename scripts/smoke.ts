@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /** 本地验收：网关三个面各打一发，断言有内容。 */
-const BASE = process.env.BASE ?? "http://127.0.0.1:19980";
+const BASE = process.env.BASE ?? `http://127.0.0.1:${process.env.PORT ?? 19900}`;
+/** GATEWAY_KEY 非空时 /v1/* 需要鉴权；用 x-api-key 而不是 Authorization: Bearer。 */
+const AUTH: Record<string, string> = process.env.GATEWAY_KEY ? { "x-api-key": process.env.GATEWAY_KEY } : {};
 
 async function chat(stream: boolean) {
   const r = await fetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...AUTH },
     body: JSON.stringify({ model: "deepseek-v4.1-flash", stream, messages: [{ role: "user", content: "只回答两个字：收到" }] }),
   });
   if (!r.ok) throw new Error(`chat ${r.status} ${await r.text()}`);
@@ -34,7 +36,7 @@ async function chat(stream: boolean) {
 async function anthropic() {
   const r = await fetch(`${BASE}/v1/messages`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...AUTH },
     body: JSON.stringify({ model: "deepseek-v4.1-flash", max_tokens: 32, stream: true, messages: [{ role: "user", content: "只回答两个字：收到" }] }),
   });
   const t = await r.text();
@@ -42,7 +44,7 @@ async function anthropic() {
   return "ok";
 }
 
-const models = await (await fetch(`${BASE}/v1/models`)).json() as any;
+const models = await (await fetch(`${BASE}/v1/models`, { headers: AUTH })).json() as any;
 assert(models.data.length > 0, "models empty");
 const a = await chat(false);
 assert(a.trim().length > 0, "non-stream empty");

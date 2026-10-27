@@ -45,7 +45,7 @@ TRAE_AUTH_FILE=/path/to/trae-auth.json node src/main.ts
 |---|---|
 | `POST /v1/chat/completions` | OpenAI 兼容，`stream:true` 走 SSE；思考链放在 `delta.reasoning_content` |
 | `POST /v1/messages` | Anthropic 兼容，SSE；思考链走 `thinking_delta` |
-| `GET /v1/models` | 静态清单（`src/config.ts` 的 `MODELS`） |
+| `GET /v1/models` | 上游同步的可见模型 + 每个支持 Max 的模型的 `<名>__max` 变体（失败时回退 `src/config.ts` 的 `MODELS`） |
 | `GET /healthz` | 登录态可读性 + 过期时间 |
 
 ```bash
@@ -109,6 +109,66 @@ providers:
   `deviceId/machineId/privateKeyPEM` 等原字段）；写回失败只降级为内存内使用。
 - **并发安全**：续期用 in-flight 去重，多个请求同时到达时只刷一次。
 
+## 模型档位：思考与 Max
+
+Trae 的模型有两套档位，但**在 `llm_utils_chat` 通道上只有 Max 可用**。下面的数字都是实测，不是抄文档。
+
+### 思考档：请求参数是空操作，只能靠选模型
+
+上游的 `LLMUtilsChatRequest`（Go 结构，用「字段塞错类型看 decoder 报不报错」的方式验过）只有 15 个字段：
+
+```
+function  config_name  model_name  provider  messages  tools  tool_choice
+queue_id  request_seq  custom_model_uniq_id
+user_input  session_id  message  conversation_id  is_custom_model
+```
+
+**`reasoning_effort` 不在里面**——对象 / 数组 / 数字 / 布尔四种类型都试过，全部被静默忽略。写进 body 是空操作，上游永远取模型配置里的 `default_level`。
+
+想改变思考量只能换模型：
+
+| 默认档 | 模型 |
+|---|---|
+| `extra_high`（最深） | `kimi-k3` / `kimi-k3.1-pro` / `kimi-k2.8-preview` / `minimax-m3.1-flash` |
+| `high`（多数模型） | `deepseek-v4.1-flash` / `glm-5.3*` / `glm-5.2` / `DeepSeek-V4-*` / `qwen3.8-*` / `Doubao-Seed-*` / `step-5-preview` |
+| 不思考（`support_thinking:false`，零 reasoning token） | `Doubao-Seed-Evolving` / `mimo-v2.6-flash` / `mimo-v2.6-pro` / `minimax-m3` / `qwen-3.7-plus` |
+
+权威来源是 `POST /api/ide/v1/batch_get_detail_param {"functions":["chat_v3"]}` 响应里 `config_info_list[].reasoning_effort_config`，档位随上游变，别写死。
+
+### Max：用 `model_name` 选变体
+
+同一个模型有两套配置档，靠 `model_name` 切换，`config_name` 放裸名：
+
+| body | 结果 |
+|---|---|
+| `config_name: <名>` | 200，上游默认 `__dev` |
+| `+ model_name: <名>` | **4001 the model is unknown**（裸名不能当变体名） |
+| `+ model_name: <名>__dev` | 200 |
+| `+ model_name: <名>__max` | 200，1M 档生效 |
+
+客户端写法 `<名>:max` / `<名>@max` 也认（`src/trae/chat.ts` 的 `splitModel()`）。
+
+`deepseek-v4.1-flash`（chat_v3）两档的真实差异：
+
+| | `__dev` | `__max` |
+|---|---|---|
+| 上下文参考值 | 116,000 | 1,000,000 |
+| prompt 预算 | 100,000 | 936,000 |
+| **单轮输出上限** | **16,000** | **64,000** |
+
+`/v1/models` 自动给每个 `display_config.max_mode && context_window_tokens.max` 的模型追加 `<名>__max`，直接选即可。
+
+### 两个坑
+
+1. **上下文数字不是硬墙。** 实测 `__dev` 档一次吃 277,826 prompt tokens 全量通过（`cache_read_input_tokens=0`），116k 只是参考值，别拿它当失败阈值。
+2. **输出上限是硬墙，而且截断时 `finish_reason` 报 `stop`。** 让模型写长文，`__dev` 档 `completion_tokens` 精确停在 **16,000**（输出 41,961 汉字），`finish_reason: stop`。靠 `finish_reason == length` 判截断的客户端**永远判不到**，只会拿到内容腰斩但语法完整的产出——这是这套通道最咬人的一处。
+
+中文 token 效率约 **2.6 字符/token**（16k 输出上限 ≈ 4.2 万汉字，按 1 token≈1.5 汉字估会差 3 倍）。
+
+日常问答、单文件改动用裸名；写大文件、长报告、大补丁才切 `__max`。
+
+> 客户端自己的上下文规划可能比上游小：Hermes 对不认识的模型 id 一律 fallback 256k，压缩阈值取一半 = 128k，所以 1M 那档在它里面走不到，除非显式设 `model.context_length`。
+
 ## 控制台
 
 `GET /console` 是一个进程内的状态面板：请求数与状态分布、按模型的 token 用量、最近请求、RSS、token 到期时间、实际生效的超时。
@@ -143,6 +203,6 @@ providers:
 ## 未做（有明确升级路径）
 
 - **token 自动续期**：已实现，走旧 `ExchangeToken` 接口（剩余 <30 分钟自动刷新，原子写回并保留 `deviceId/machineId/privateKeyPEM`）。
-- **模型清单**：启动时后台拉 `batch_get_detail_param`（`{"functions":["chat_v3"]}`，228KB）同步可见模型，缓存 6 小时；拉取失败或为空时回退静态白名单 `MODELS`。
+- **模型清单**：启动时后台拉 `batch_get_detail_param`（`{"functions":["chat_v3"]}`，228KB）同步可见模型，缓存 6 小时；同时按 `display_config.max_mode && context_window_tokens.max` 给每个模型追加 `<名>__max` 变体（见「模型档位」一节）。拉取失败或为空时回退静态白名单 `MODELS`。
 - **原生 agent 通道**：见 `docs/PROTOCOL.md` §4.4。
 - **工具调用**：`llm_utils_chat` 原生支持 function calling——`tools[].function.parameters` 必须是 **JSON 字符串**；支持并行调用与 `assistant.tool_calls` + `role:"tool"` 的多轮回传。

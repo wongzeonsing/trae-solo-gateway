@@ -67,6 +67,20 @@ export function mapEffort(v?: string): "light" | "high" | "extra_high" | undefin
   return EFFORT[v.toLowerCase()] ?? (["light", "high", "extra_high"].includes(v.toLowerCase()) ? (v.toLowerCase() as never) : undefined);
 }
 
+/**
+ * 上游只认 `config_name` + `model_name`：
+ *   - 裸名只能当 config_name（当 model_name 传会 "the model is unknown"）；
+ *   - 变体名（<name>__dev / <name>__max）必须放 model_name，config_name 用裸名。
+ * 所以把客户端习惯的 `<name>:max` / `<name>@max` 翻译成 `<name>__max`。
+ */
+export function splitModel(model: string): { config: string; variant?: string } {
+  const m = model.trim();
+  const alias = m.match(/^(.*?)[:@](dev|max)$/i);
+  if (alias) return { config: alias[1], variant: `${alias[1]}__${alias[2].toLowerCase()}` };
+  if (/^.*__[A-Za-z0-9_]+$/.test(m)) return { config: m.replace(/__[A-Za-z0-9_]+$/, ""), variant: m };
+  return { config: m };
+}
+
 /** 上游 messages：assistant 带 tool_calls、tool 带 tool_call_id，其余走文本块。 */
 function toUpstreamMessages(messages: Msg[]) {
   return messages.map((m) => {
@@ -124,11 +138,14 @@ export async function* streamChat(
 ): AsyncGenerator<Delta> {
   const effort = mapEffort(opts.reasoningEffort);
   const tools = toUpstreamTools(opts.tools);
+  const { config, variant } = splitModel(model);
   const body = {
     function: cfg.functionName,
-    config_name: model,
-    model,
+    config_name: config,
+    ...(variant ? { model_name: variant } : {}),
     stream: true,
+    // 实测 LLMUtilsChatRequest 里没有 reasoning_effort 字段（类型 oracle 四种取值都被静默忽略），
+    // 上游固定用配置默认档（high）。这里照发是为了上游将来加回该字段时无需改代码。
     ...(effort ? { reasoning_effort: effort } : {}),
     ...(tools?.length ? { tools, ...(opts.toolChoice ? { tool_choice: opts.toolChoice } : {}) } : {}),
     messages: toUpstreamMessages(messages),
