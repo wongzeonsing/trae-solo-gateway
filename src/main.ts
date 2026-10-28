@@ -47,6 +47,41 @@ app.get("/healthz", async () => {
   }
 });
 
+/** 剩余积分：桌面端 credit-chips 插件的 /credits 打这里。旧 trae-proxy 有这条路由，
+ *  换成 trae-solo-gateway 时漏了 → 插件拿到 404，chip 显示「—」。
+ *  上游 user_current_entitlement_list 只要 token，POST 空 body 即可。 */
+app.get("/credits", async (_req, reply) => {
+  try {
+    const a = await getAuth();
+    const r = await fetch(`${cfg.authHost}/trae/api/v2/pay/user_current_entitlement_list`, {
+      method: "POST",
+      headers: {
+        Authorization: `Cloud-IDE-JWT ${a.token}`,
+        "X-Cloudide-Token": a.token,
+        "x-app-id": cfg.appId,
+        "x-app-version": "default",
+        "x-ide-version-code": "20250002",
+        "x-app-version-code": "20250002",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+      signal: AbortSignal.timeout(20_000),
+    });
+    const d = (await r.json()) as { usage_summary?: { total_amount: number; consumed_amount: number } };
+    const u = d.usage_summary;
+    if (!u) {
+      return reply.code(502).send({ error: `上游无 usage_summary: ${JSON.stringify(d).slice(0, 120)}` });
+    }
+    return {
+      remain: +(Number(u.total_amount) - Number(u.consumed_amount)).toFixed(2),
+      total: Number(u.total_amount),
+      used: Number(u.consumed_amount),
+    };
+  } catch (e) {
+    return reply.code(502).send({ error: String((e as Error).message).slice(0, 160) });
+  }
+});
+
 // 启动前探测登录态，但失败只告警不退出：keepalive 以端口存活为准，
 // 进程一崩就进入「拉起→崩→拉起」循环，反而掩盖了真正的凭据问题。
 try {

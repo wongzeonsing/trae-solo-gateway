@@ -11,6 +11,8 @@ export const cfg = {
   upstream: env.TRAE_UPSTREAM ?? "https://api5-normal.mchost.guru",
   /** Trae 登录态（只读）。默认指向导出的 auth 文件。 */
   authFile: env.TRAE_AUTH_FILE ?? "./secrets/trae-auth.json",
+  /** 账号级接口（credits/ExchangeToken）的 host，与 auth.ts 的 AUTH_HOST 同源。 */
+  authHost: env.TRAE_AUTH_HOST ?? "https://api.trae.cn",
   appId: env.TRAE_APP_ID ?? "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
   ideVersion: env.TRAE_IDE_VERSION ?? "3.4.4",
   /** 新模型的闸门：旧值会 4001 config item is empty。 */
