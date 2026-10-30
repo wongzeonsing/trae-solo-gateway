@@ -37,12 +37,6 @@ export async function refreshModels(): Promise<string[]> {
       const name = String(c.config_name ?? "");
       if (!name || name.startsWith("custom_model_") || INTERNAL.has(name)) continue;
       live.push(name);
-      // `model_name=<name>__max` 在 llm_utils_chat 上实测可用：上下文 116k→1M、
-      // 单轮输出上限 16k→64k、prompt 预算 100k→936k。只有服务端标了 max_mode
-      // 且给出 max 上下文的模型才列，别让用户选到必然 4001 的名字。
-      const dc = c.display_config as { max_mode?: boolean } | undefined;
-      const cw = c.context_window_tokens as { max?: number } | undefined;
-      if (dc?.max_mode && cw?.max) live.push(`${name}__max`);
     }
     if (!live.length) throw new Error("upstream returned no visible model");
 

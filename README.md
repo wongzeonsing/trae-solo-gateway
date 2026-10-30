@@ -45,7 +45,7 @@ TRAE_AUTH_FILE=/path/to/trae-auth.json node src/main.ts
 |---|---|
 | `POST /v1/chat/completions` | OpenAI 兼容，`stream:true` 走 SSE；思考链放在 `delta.reasoning_content` |
 | `POST /v1/messages` | Anthropic 兼容，SSE；思考链走 `thinking_delta` |
-| `GET /v1/models` | 上游同步的可见模型 + 每个支持 Max 的模型的 `<名>__max` 变体（失败时回退 `src/config.ts` 的 `MODELS`） |
+| `GET /v1/models` | 上游同步的可见模型（裸名；**不列 `__max` 变体**，变体靠 `<名>:max` 手写调用。失败时回退 `src/config.ts` 的 `MODELS`） |
 | `GET /healthz` | 登录态可读性 + 过期时间 |
 
 ```bash
@@ -156,7 +156,7 @@ user_input  session_id  message  conversation_id  is_custom_model
 | prompt 预算 | 100,000 | 936,000 |
 | **单轮输出上限** | **16,000** | **64,000** |
 
-`/v1/models` 自动给每个 `display_config.max_mode && context_window_tokens.max` 的模型追加 `<名>__max`，直接选即可。
+`/v1/models` 只列裸名，不再追加 `__max` 变体（列表瘦身，35→19）。要走 Max 档就在调用时写 `<名>:max` 或 `<名>__max`，`splitModel()` 会翻译成上游的变体名；列表里没有的名字照样能发，请求路径不校验清单。
 
 ### 两个坑
 
@@ -203,6 +203,6 @@ user_input  session_id  message  conversation_id  is_custom_model
 ## 未做（有明确升级路径）
 
 - **token 自动续期**：已实现，走旧 `ExchangeToken` 接口（剩余 <30 分钟自动刷新，原子写回并保留 `deviceId/machineId/privateKeyPEM`）。
-- **模型清单**：启动时后台拉 `batch_get_detail_param`（`{"functions":["chat_v3"]}`，228KB）同步可见模型，缓存 6 小时；同时按 `display_config.max_mode && context_window_tokens.max` 给每个模型追加 `<名>__max` 变体（见「模型档位」一节）。拉取失败或为空时回退静态白名单 `MODELS`。
+- **模型清单**：启动时后台拉 `batch_get_detail_param`（`{"functions":["chat_v3"]}`，228KB）同步可见模型，缓存 6 小时；不追加 `__max` 变体（见「模型档位」一节）。拉取失败或为空时回退静态白名单 `MODELS`。
 - **原生 agent 通道**：见 `docs/PROTOCOL.md` §4.4。
 - **工具调用**：`llm_utils_chat` 原生支持 function calling——`tools[].function.parameters` 必须是 **JSON 字符串**；支持并行调用与 `assistant.tool_calls` + `role:"tool"` 的多轮回传。
